@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Create native Claude Code Routines and Codex Automations for low-cost harness warmup runs.",
   "type": "module",
+  "files": [
+    "src"
+  ],
   "bin": {
     "harness-reset": "./src/cli.js"
   },
