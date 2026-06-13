@@ -49,3 +49,11 @@ test('installed package bin prints usage from the CLI stub', async () => {
     await rm(tempDir, { force: true, recursive: true });
   }
 });
+
+test('CLI import does not throw when argv path is not realpath-able', async () => {
+  await execFileAsync('node', [
+    '--input-type=module',
+    '-e',
+    "process.argv[1] = '-'; await import('./src/cli.js');",
+  ]);
+});

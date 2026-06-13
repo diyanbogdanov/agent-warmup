@@ -107,7 +107,8 @@ function parseArgs(argv) {
     }
 
     if (arg === '--lead-minutes') {
-      parsed.leadMinutes = Number.parseInt(argv[index + 1] || '', 10);
+      parsed.leadMinutesRaw = argv[index + 1] || '';
+      parsed.leadMinutes = Number.parseInt(parsed.leadMinutesRaw, 10);
       index += 1;
       continue;
     }
@@ -283,14 +284,23 @@ async function setupCodex({ io, env, platform, fs, schedule, prompt, dryRun, yes
     return 0;
   }
 
-  if (!yes) {
-    writeStdout(io, 'After creating the automation manually, type "create" to write metadata: ');
-    const confirmation = await readConfirmation(io);
+  if (yes) {
+    writeStdout(
+      io,
+      'Codex automation was not created by this CLI. Create it in Codex, then type "create" to record local metadata.\n',
+    );
+    return 0;
+  }
 
-    if (confirmation !== 'create') {
-      writeStdout(io, 'Aborted\n');
-      return 1;
-    }
+  writeStdout(
+    io,
+    'Codex automation was not created by this CLI. Create it in Codex, then type "create" to record local metadata: ',
+  );
+  const confirmation = await readConfirmation(io);
+
+  if (confirmation !== 'create') {
+    writeStdout(io, 'Aborted\n');
+    return 1;
   }
 
   writeProviderConfig('codex', { env, platform, fs, schedule, prompt });
@@ -428,8 +438,11 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     return 1;
   }
 
-  if (Number.isNaN(parsed.leadMinutes)) {
-    writeStderr(io, 'Invalid --lead-minutes value.\n');
+  if (
+    parsed.leadMinutesRaw !== undefined &&
+    (!/^\d+$/.test(parsed.leadMinutesRaw) || parsed.leadMinutes > 1440)
+  ) {
+    writeStderr(io, 'Invalid --lead-minutes value. Expected an integer in range 0..1440.\n');
     return 1;
   }
 
@@ -474,7 +487,12 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
 
 function isEntrypoint(metaUrl, argvPath) {
   if (!argvPath) return false;
-  return fs.realpathSync(fileURLToPath(metaUrl)) === fs.realpathSync(argvPath);
+
+  try {
+    return fs.realpathSync(fileURLToPath(metaUrl)) === fs.realpathSync(argvPath);
+  } catch {
+    return false;
+  }
 }
 
 if (isEntrypoint(import.meta.url, process.argv[1])) {

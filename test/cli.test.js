@@ -175,6 +175,31 @@ test('setup dry-run for Codex prints fallback automation instructions', async ()
   assert.equal(exitCode, 0);
   assert.match(io.stdout, /Open a Codex thread/);
   assert.match(io.stdout, /Harness Reset Warmup/);
+  assert.equal(fs.writeCalls.length, 0);
+  assert.equal(fs.renameCalls.length, 0);
+});
+
+test('setup Codex with yes prints fallback without recording metadata', async () => {
+  const fs = createMemoryFs({
+    '/bin/codex': '',
+    '/home/alex/.codex': '',
+  });
+  const io = createIo();
+  const spawn = createSpawn({ '/bin/codex': '0.46.0' });
+
+  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00', '--yes'], {
+    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync: spawn.spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(io.stdout, /Open a Codex thread/);
+  assert.match(io.stdout, /Codex automation was not created by this CLI/);
+  assert.equal(fs.writeCalls.length, 0);
+  assert.equal(fs.renameCalls.length, 0);
 });
 
 test('status prints current config JSON from injected config path', async () => {
@@ -249,6 +274,36 @@ test('setup without enough history and no time asks for explicit time', async ()
   assert.equal(exitCode, 1);
   assert.match(io.stdout, /insufficient history/i);
   assert.match(io.stdout, /Re-run with --time HH:MM/);
+});
+
+test('lead minutes rejects partial integer values', async () => {
+  const io = createIo();
+
+  const exitCode = await runCli(['plan', '--provider', 'claude', '--lead-minutes', '1abc'], {
+    env: { HOME: '/home/alex', PATH: '/bin' },
+    fs: createMemoryFs(),
+    io,
+    platform: 'linux',
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(io.stderr, /Invalid --lead-minutes/);
+  assert.match(io.stderr, /0\.\.1440/);
+});
+
+test('lead minutes rejects negative values', async () => {
+  const io = createIo();
+
+  const exitCode = await runCli(['plan', '--provider', 'claude', '--lead-minutes', '-40'], {
+    env: { HOME: '/home/alex', PATH: '/bin' },
+    fs: createMemoryFs(),
+    io,
+    platform: 'linux',
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(io.stderr, /Invalid --lead-minutes/);
+  assert.match(io.stderr, /0\.\.1440/);
 });
 
 test('runCli prints usage when invoked with no args', async () => {
