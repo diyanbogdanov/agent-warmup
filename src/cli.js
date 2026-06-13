@@ -230,9 +230,26 @@ function printSetupSuggestions(
     return;
   }
 
+  const spinner = ui.startSpinner('Building warmup suggestions...');
+  const suggestions = providersWithoutConfig.map((result) => {
+    if (!result.installed) {
+      return { result, scheduleResult: null };
+    }
+
+    return {
+      result,
+      scheduleResult: inferScheduleResult(result, {
+        fs,
+        resetPaddingMinutes,
+        windowMinutes,
+      }),
+    };
+  });
+  spinner.stop();
+
   writeStdout(io, `${ui.bold('Suggestions')}${ui.interactive ? '' : ':'}\n`);
 
-  for (const result of providersWithoutConfig) {
+  for (const { result, scheduleResult } of suggestions) {
     if (!result.installed) {
       if (!ui.interactive) {
         writeStdout(io, `  ${result.provider}: missing. Install ${result.provider} before setup.\n`);
@@ -245,12 +262,6 @@ function printSetupSuggestions(
       );
       continue;
     }
-
-    const scheduleResult = inferScheduleResult(result, {
-      fs,
-      resetPaddingMinutes,
-      windowMinutes,
-    });
 
     if (scheduleResult.kind === 'insufficient-limit-history') {
       if (!ui.interactive) {
@@ -268,6 +279,19 @@ function printSetupSuggestions(
       continue;
     }
 
+    if (ui.interactive) {
+      writeStdout(io, `  ${ui.symbol('warm')} ${providerLabel(result.provider)}\n`);
+      writeStdout(io, `    Warmup       ${ui.cyan(scheduleResult.schedule)}\n`);
+      writeStdout(io, `    Limit hit    ${scheduleResult.limitHit}\n`);
+      writeStdout(io, `    Target reset ${scheduleResult.targetReset}\n`);
+      writeStdout(io, `    Evidence     ${scheduleResult.limitHitDays} limit-hit days\n`);
+      writeStdout(
+        io,
+        `    Run          ${ui.cyan(`agent-warmup setup --provider ${result.provider}`)}\n`,
+      );
+      continue;
+    }
+
     if (!ui.interactive) {
       writeStdout(
         io,
@@ -275,11 +299,6 @@ function printSetupSuggestions(
       );
       continue;
     }
-
-    writeStdout(
-      io,
-      `  ${ui.symbol('warm')} ${providerLabel(result.provider)} ${ui.cyan(scheduleResult.schedule)} ${ui.dim(`${scheduleResult.limitHit} -> ${scheduleResult.targetReset} -> ${scheduleResult.warmupTime}; ${scheduleResult.limitHitDays} limit-hit days`)} ${ui.cyan(`Run: agent-warmup setup --provider ${result.provider}`)}\n`,
-    );
   }
 }
 

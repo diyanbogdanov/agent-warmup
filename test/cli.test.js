@@ -39,6 +39,56 @@ function createMemoryFs(entries = {}) {
   };
 }
 
+function createDashboardFs({ claudeLimitHitAt = '2026-06-10T17:22:00.000Z' } = {}) {
+  const files = new Map([
+    ['/bin/claude', ''],
+    ['/home/alex/.claude', ''],
+    [
+      '/home/alex/.claude/session.jsonl',
+      [
+        `{"timestamp":"${claudeLimitHitAt}","message":"Usage limit reached. Please try again later."}`,
+        '{"timestamp":"2026-06-09T17:22:00","message":"Usage limit reached. Please try again later."}',
+        '{"timestamp":"2026-06-10T17:22:00","message":"Usage limit reached. Please try again later."}',
+        '{"timestamp":"2026-06-11T17:22:00","message":"Usage limit reached. Please try again later."}',
+        '{"timestamp":"2026-06-12T17:22:00","message":"Usage limit reached. Please try again later."}',
+        '{"timestamp":"2026-06-13T17:22:00","message":"Usage limit reached. Please try again later."}',
+      ].join('\n'),
+    ],
+  ]);
+
+  return {
+    existsSync(filePath) {
+      return files.has(filePath);
+    },
+    readFileSync(filePath, encoding) {
+      assert.equal(encoding, 'utf8');
+      return files.get(filePath);
+    },
+    readdirSync(filePath, options) {
+      assert.deepEqual(options, { withFileTypes: true });
+
+      if (filePath === '/home/alex/.claude') {
+        return [
+          {
+            name: 'session.jsonl',
+            isDirectory: () => false,
+            isFile: () => true,
+          },
+        ];
+      }
+
+      return [];
+    },
+    statSync(filePath) {
+      if (!files.has(filePath)) {
+        throw new Error(`missing file: ${filePath}`);
+      }
+
+      return { mtime: new Date('2026-06-13T17:22:00') };
+    },
+  };
+}
+
 function createIo(input = '') {
   return {
     stdout: '',
@@ -63,6 +113,10 @@ function createInteractiveIo(input = '') {
     ...createIo(input),
     isTty: true,
   };
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
 }
 
 function createSpawn(versionByCommand = {}) {
@@ -130,6 +184,29 @@ test('default command renders a polished interactive dashboard when stdout is a 
   assert.match(io.stdout, /Scanning local harness history/);
   assert.match(io.stdout, /Claude Code/);
   assert.match(io.stdout, /setup --provider claude --time HH:MM/);
+});
+
+test('interactive suggestions render as readable provider blocks after suggestion loading state', async () => {
+  const io = createInteractiveIo();
+  const spawn = createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' });
+
+  const exitCode = await runCli([], {
+    env: { HOME: '/home/alex', PATH: '/bin' },
+    fs: createDashboardFs(),
+    io,
+    platform: 'linux',
+    spawnSync: spawn.spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  const output = stripAnsi(io.stdout);
+  assert.match(output, /Building warmup suggestions/);
+  assert.match(output, /Suggestions/);
+  assert.match(output, /Claude Code\n\s+Warmup\s+daily at 12:32/);
+  assert.match(output, /Limit hit\s+17:22/);
+  assert.match(output, /Target reset\s+17:32/);
+  assert.match(output, /Run\s+agent-warmup setup --provider claude/);
+  assert.doesNotMatch(output, /Claude Code daily at 12:32 17:22 -> 17:32 -> 12:32/);
 });
 
 test('plain flag disables terminal styling and animation output', async () => {
