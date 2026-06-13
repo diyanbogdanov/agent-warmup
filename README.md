@@ -15,7 +15,7 @@ NPX-friendly setup CLI for native Claude Code Routines and Codex Automations.
 - Does not run its own scheduler.
 - Does not create cron, launchd, systemd, Windows Task Scheduler, GitHub Actions, or Cloudflare Workers jobs.
 - Does not store provider credentials.
-- Does not guarantee a reset window starts or improves; it creates native scheduled warmup runs only.
+- Does not guarantee a reset window starts or improves; it creates or guides native scheduled warmup runs only.
 
 ## Usage
 
@@ -34,9 +34,11 @@ npx harness-reset setup --provider claude --time 09:00
 
 Type `create` when prompted to continue.
 
+For Codex in plain-terminal mode, the CLI prints native Codex Automation instructions instead of directly creating the automation.
+
 Claude Code Routines consume normal Claude plan usage. Codex Automations consume normal Codex usage and can affect weekly usage limits.
 
 ## Metadata paths
 
-- macOS/Linux: `~/.config/harness-reset/config.json`
+- macOS/Linux: `$XDG_CONFIG_HOME/harness-reset/config.json` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/harness-reset/config.json`
 - Windows: `%APPDATA%\harness-reset\config.json`
