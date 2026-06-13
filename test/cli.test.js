@@ -153,6 +153,71 @@ test('setup without yes requires typed confirmation before creating Claude routi
   );
 });
 
+test('setup Claude on Windows uses detected cmd shim before writing metadata', async () => {
+  const executable = 'C:\\Tools\\claude.CMD';
+  const fs = createMemoryFs({
+    [executable]: '',
+    'C:\\Users\\Alex\\.claude': '',
+  });
+  const io = createIo();
+  const spawnCalls = [];
+  const spawnSync = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+
+    if (command === 'cmd.exe' && args.at(-1) === `"${executable}" --version`) {
+      return { status: 0, stdout: '2.1.104 (Claude Code)\r\n' };
+    }
+
+    assert.equal(fs.writeCalls.length, 0);
+    assert.equal(fs.renameCalls.length, 0);
+    return { status: 0, stdout: '' };
+  };
+
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00', '--yes'], {
+    env: {
+      APPDATA: 'C:\\Users\\Alex\\AppData\\Roaming',
+      Path: 'C:\\Tools',
+      PATHEXT: '.CMD',
+      USERPROFILE: 'C:\\Users\\Alex',
+    },
+    fs,
+    io,
+    platform: 'win32',
+    spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(spawnCalls.length, 2);
+  assert.deepEqual(spawnCalls[0], {
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${executable}" --version`],
+    options: {
+      encoding: 'utf8',
+      env: {
+        APPDATA: 'C:\\Users\\Alex\\AppData\\Roaming',
+        Path: 'C:\\Tools',
+        PATHEXT: '.CMD',
+        USERPROFILE: 'C:\\Users\\Alex',
+      },
+    },
+  });
+  assert.equal(spawnCalls[1].command, 'cmd.exe');
+  assert.deepEqual(spawnCalls[1].args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.match(spawnCalls[1].args[3], /^"C:\\Tools\\claude\.CMD" "\/schedule daily at 09:00 /);
+  assert.deepEqual(spawnCalls[1].options, {
+    encoding: 'utf8',
+    env: {
+      APPDATA: 'C:\\Users\\Alex\\AppData\\Roaming',
+      Path: 'C:\\Tools',
+      PATHEXT: '.CMD',
+      USERPROFILE: 'C:\\Users\\Alex',
+    },
+    stdio: 'inherit',
+  });
+  assert.equal(fs.writeCalls.length, 1);
+  assert.equal(fs.renameCalls.length, 1);
+});
+
 test('setup dry-run for Codex prints fallback automation instructions', async () => {
   const fs = createMemoryFs({
     '/bin/codex': '',

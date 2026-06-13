@@ -154,7 +154,27 @@ function printDetection(io, result) {
 }
 
 function shellQuote(value) {
-  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
+function executableExtension(executable) {
+  const extensionMatch = /(\.[^./\\]+)$/.exec(executable);
+
+  return extensionMatch?.[1].toLowerCase() || '';
+}
+
+function buildClaudeSetupInvocation({ executable, platform, args }) {
+  if (platform === 'win32' && ['.bat', '.cmd'].includes(executableExtension(executable))) {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', [executable, ...args].map(shellQuote).join(' ')],
+    };
+  }
+
+  return {
+    command: executable,
+    args,
+  };
 }
 
 async function readConfirmation(io) {
@@ -237,6 +257,7 @@ async function setupClaude({
   platform,
   fs,
   spawnSync,
+  executable,
   schedule,
   prompt,
   dryRun,
@@ -260,7 +281,12 @@ async function setupClaude({
     }
   }
 
-  const result = spawnSync(action.command, action.args, {
+  const invocation = buildClaudeSetupInvocation({
+    executable,
+    platform,
+    args: action.args,
+  });
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8',
     env,
     stdio: 'inherit',
@@ -352,6 +378,7 @@ async function runSetup(parsed, deps) {
             platform,
             fs: depFs,
             spawnSync,
+            executable: providerInfo.executable,
             schedule,
             prompt,
             dryRun: parsed.dryRun,
