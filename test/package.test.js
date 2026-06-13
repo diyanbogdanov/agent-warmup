@@ -23,7 +23,7 @@ test('package publishes only src and points bin at an executable CLI stub', asyn
   assert.equal(binContents.split('\n')[0], '#!/usr/bin/env node');
 });
 
-test('installed package bin prints usage from the CLI stub', async () => {
+test('installed package bin prints usage from the CLI stub with help flag', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'agent-warmup-package-'));
   const installDir = path.join(tempDir, 'install');
 
@@ -42,9 +42,9 @@ test('installed package bin prints usage from the CLI stub', async () => {
 
     const binName = process.platform === 'win32' ? 'agent-warmup.cmd' : 'agent-warmup';
     const binPath = path.join(installDir, 'node_modules', '.bin', binName);
-    const { stdout } = await execFileAsync(binPath);
+    const { stdout } = await execFileAsync(binPath, ['--help']);
 
-    assert.match(stdout, /^Usage: agent-warmup/);
+    assert.match(stdout, /^Usage: agent-warmup \[setup\|remove\]/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

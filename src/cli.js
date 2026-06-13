@@ -25,7 +25,7 @@ import { configFilePath } from './platform.js';
 import { detectProvider, detectProviders } from './providers.js';
 import { inferWarmupTime } from './schedule.js';
 
-const USAGE = 'Usage: agent-warmup <detect|plan|setup|update|remove|status> [--provider claude|codex] [--time HH:MM] [--lead-minutes N] [--dry-run] [--yes]';
+const USAGE = 'Usage: agent-warmup [setup|remove] [--provider claude|codex] [--time HH:MM] [--lead-minutes N] [--dry-run] [--yes]';
 const MIN_ACTIVE_DAYS = 5;
 const WARMUP_NAME = 'Agent Warmup';
 
@@ -74,7 +74,7 @@ function writeStderr(io, text) {
 
 function parseArgs(argv) {
   const parsed = {
-    command: argv[0] || 'help',
+    command: argv[0] || 'dashboard',
     provider: null,
     dryRun: false,
     yes: false,
@@ -151,6 +151,61 @@ function printDetection(io, result) {
 
   for (const warning of result.warnings) {
     writeStdout(io, `  warning: ${warning}\n`);
+  }
+}
+
+function printConfiguredProviders(io, config) {
+  const configured = PROVIDERS.filter((provider) => config.providers[provider]);
+
+  if (configured.length === 0) {
+    writeStdout(io, 'No agent-warmup routines are recorded yet.\n');
+    return 0;
+  }
+
+  writeStdout(io, 'Configured routines/automations:\n');
+
+  for (const provider of configured) {
+    const metadata = config.providers[provider];
+    const name = provider === 'claude' ? metadata.routineName : metadata.automationName;
+
+    writeStdout(
+      io,
+      `  ${provider}: ${name || WARMUP_NAME}, ${metadata.schedule} (recorded by agent-warmup; native status not verified)\n`,
+    );
+  }
+
+  return configured.length;
+}
+
+function printSetupSuggestions(io, results, config, { fs, leadMinutes }) {
+  const providersWithoutConfig = results.filter((result) => !config.providers[result.provider]);
+
+  if (providersWithoutConfig.length === 0) {
+    return;
+  }
+
+  writeStdout(io, 'Suggestions:\n');
+
+  for (const result of providersWithoutConfig) {
+    if (!result.installed) {
+      writeStdout(io, `  ${result.provider}: missing. Install ${result.provider} before setup.\n`);
+      continue;
+    }
+
+    const scheduleResult = inferScheduleResult(result, { fs, leadMinutes });
+
+    if (scheduleResult.kind === 'insufficient-history') {
+      writeStdout(
+        io,
+        `  ${result.provider}: insufficient history (${scheduleResult.activeDays}/${scheduleResult.requiredDays} active days). Run: agent-warmup setup --provider ${result.provider} --time HH:MM\n`,
+      );
+      continue;
+    }
+
+    writeStdout(
+      io,
+      `  ${result.provider}: ${scheduleResult.schedule} based on ${scheduleResult.activeDays} active days; usual first activity ${scheduleResult.firstActivity}. Run: agent-warmup setup --provider ${result.provider}\n`,
+    );
   }
 }
 
@@ -501,36 +556,44 @@ function runRemove(parsed, deps) {
   return 0;
 }
 
-function runPlan(parsed, deps) {
+function runDashboard(parsed, deps) {
   const { env, platform, fs: depFs, spawnSync, io } = deps;
-  const results = [];
+  const filePath = configFilePath({ env, platform });
+  const config = readConfig(filePath, { fs: depFs });
 
-  for (const provider of selectedProviders(parsed.provider)) {
-    const providerInfo = detectProvider(provider, {
-      env,
-      platform,
-      fs: depFs,
-      spawnSync,
-    });
+  writeStdout(io, 'Agent Warmup\n');
 
-    if (!providerInfo.installed) {
-      results.push({ provider, kind: 'missing' });
-      continue;
-    }
+  const configuredCount = printConfiguredProviders(io, config);
 
-    const scheduleResult =
-      parsed.time === null
-        ? inferScheduleResult(providerInfo, { fs: depFs, leadMinutes: parsed.leadMinutes })
-        : scheduleFromTime(parsed.time, io);
-
-    results.push({
-      provider,
-      ...(scheduleResult || { kind: 'unavailable' }),
-    });
+  if (configuredCount > 0) {
+    return 0;
   }
 
-  writeStdout(io, `${JSON.stringify(results, null, 2)}\n`);
-  return results.some((result) => result.kind === 'missing' || result.kind === 'unavailable') ? 1 : 0;
+  const detectionResults =
+    parsed.provider === null
+      ? detectProviders({ env, platform, fs: depFs, spawnSync })
+      : [
+          detectProvider(parsed.provider, {
+            env,
+            platform,
+            fs: depFs,
+            spawnSync,
+          }),
+        ];
+
+  writeStdout(io, 'Detected providers:\n');
+
+  for (const result of detectionResults) {
+    writeStdout(io, '  ');
+    printDetection(io, result);
+  }
+
+  printSetupSuggestions(io, detectionResults, config, {
+    fs: depFs,
+    leadMinutes: parsed.leadMinutes,
+  });
+
+  return 0;
 }
 
 export async function runCli(argv = process.argv.slice(2), deps = {}) {
@@ -573,47 +636,16 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     return 1;
   }
 
-  if (parsed.command === 'detect') {
-    const detectionResults =
-      parsed.provider === null
-        ? detectProviders({ env, platform, fs: depFs, spawnSync })
-        : [
-            detectProvider(parsed.provider, {
-              env,
-              platform,
-              fs: depFs,
-              spawnSync,
-            }),
-          ];
-
-    for (const result of detectionResults) {
-      printDetection(io, result);
-    }
-
-    return 0;
+  if (parsed.command === 'dashboard') {
+    return runDashboard(parsed, normalizedDeps);
   }
 
-  if (parsed.command === 'plan') {
-    return runPlan(parsed, normalizedDeps);
-  }
-
-  if (parsed.command === 'setup' || parsed.command === 'update') {
+  if (parsed.command === 'setup') {
     return runSetup(parsed, normalizedDeps);
   }
 
   if (parsed.command === 'remove') {
     return runRemove(parsed, normalizedDeps);
-  }
-
-  if (parsed.command === 'status') {
-    const filePath = configFilePath({ env, platform });
-
-    for (const result of detectProviders({ env, platform, fs: depFs, spawnSync })) {
-      printDetection(io, result);
-    }
-
-    writeStdout(io, `Metadata:\n${JSON.stringify(readConfig(filePath, { fs: depFs }), null, 2)}\n`);
-    return 0;
   }
 
   writeStderr(io, `Unknown command: ${parsed.command}\n`);

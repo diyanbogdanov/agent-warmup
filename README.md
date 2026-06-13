@@ -4,13 +4,13 @@ NPX-friendly setup CLI for native Claude Code Routines and Codex Automations.
 
 ## What it does
 
-- Detects `claude` and `codex`.
+- Shows installed `claude` and `codex` providers.
 - Looks at local state file modification times without reading prompt or response contents.
 - Suggests a daily warmup time, defaulting to 30 minutes before usual first activity.
 - Creates a Claude Code Routine through the native `/schedule` flow.
 - Creates a Codex Automation when the host environment exposes a native automation creator.
 - Provides native Codex Automation instructions when direct creation is unavailable from a plain terminal.
-- Records local metadata for created or manually confirmed warmup schedules.
+- Records local metadata for created or manually confirmed warmup schedules so it can show routines/automations created by `agent-warmup`.
 
 ## What it does not do
 
@@ -22,14 +22,13 @@ NPX-friendly setup CLI for native Claude Code Routines and Codex Automations.
 ## Usage
 
 ```bash
-npx agent-warmup detect
-npx agent-warmup plan
-npx agent-warmup status
+npx agent-warmup
 npx agent-warmup setup --provider claude --dry-run
 npx agent-warmup setup --provider codex --time 09:00 --dry-run
-npx agent-warmup update --provider claude --time 09:00 --dry-run
 npx agent-warmup remove --provider claude
 ```
+
+Run `npx agent-warmup` to see routines/automations recorded by this CLI. If none are recorded, it shows provider detection and setup suggestions.
 
 To create a Claude Code Routine:
 
@@ -39,11 +38,7 @@ npx agent-warmup setup --provider claude --time 09:00
 
 Type `create` when prompted to continue.
 
-Use `update` to re-run setup for an existing provider. If no local metadata exists yet, `update` still behaves like setup.
-
 Use `remove` to delete local agent-warmup metadata. It does not delete native Claude Code Routines or Codex Automations; it prints provider-specific instructions for removing or pausing those native schedules.
-
-`status` prints provider availability first, then local metadata JSON.
 
 For Codex in plain-terminal mode, the CLI prints native Codex Automation instructions instead of directly creating the automation. `--yes` does not mark Codex configured in this fallback mode because the CLI cannot prove the automation was created; type `create` after manually creating it to record local metadata.
 

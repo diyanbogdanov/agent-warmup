@@ -72,15 +72,7 @@ function createSpawn(versionByCommand = {}) {
   return { calls, spawnSync };
 }
 
-function metadataFromStatus(output) {
-  const marker = 'Metadata:\n';
-  const markerIndex = output.indexOf(marker);
-
-  assert.notEqual(markerIndex, -1);
-  return JSON.parse(output.slice(markerIndex + marker.length));
-}
-
-test('detect prints installed and missing provider availability', async () => {
+test('default command shows suggestions when no agent-warmup setup is recorded', async () => {
   const fs = createMemoryFs({
     '/bin/claude': '',
     '/home/alex/.claude': '',
@@ -88,7 +80,7 @@ test('detect prints installed and missing provider availability', async () => {
   const io = createIo();
   const spawn = createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' });
 
-  const exitCode = await runCli(['detect'], {
+  const exitCode = await runCli([], {
     env: { HOME: '/home/alex', PATH: '/bin' },
     fs,
     io,
@@ -97,12 +89,51 @@ test('detect prints installed and missing provider availability', async () => {
   });
 
   assert.equal(exitCode, 0);
-  assert.match(io.stdout, /claude: installed \(2\.1\.104 \(Claude Code\)\); local state found/);
-  assert.match(io.stdout, /codex: missing; local state missing/);
+  assert.match(io.stdout, /Agent Warmup/);
+  assert.match(io.stdout, /No agent-warmup routines are recorded yet/);
+  assert.match(io.stdout, /claude: installed \(2\.1\.104 \(Claude Code\)\)/);
+  assert.match(io.stdout, /claude: insufficient history/);
+  assert.match(io.stdout, /Run: agent-warmup setup --provider claude --time HH:MM/);
   assert.deepEqual(
     spawn.calls.map((call) => [call.command, call.args]),
     [['/bin/claude', ['--version']]],
   );
+});
+
+test('default command shows routines recorded by agent-warmup', async () => {
+  const configPath = '/tmp/agent-warmup/config.json';
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/home/alex/.claude': '',
+    [configPath]: JSON.stringify({
+      version: 1,
+      providers: {
+        claude: {
+          enabled: true,
+          routineName: 'Agent Warmup',
+          schedule: 'daily at 09:00',
+          promptHash: 'sha256:test',
+        },
+      },
+    }),
+  });
+  const io = createIo();
+
+  const exitCode = await runCli([], {
+    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync: createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' }).spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(io.stdout, /Configured routines\/automations:/);
+  assert.match(io.stdout, /claude: Agent Warmup, daily at 09:00/);
+  assert.match(io.stdout, /recorded by agent-warmup/);
+  assert.doesNotMatch(io.stdout, /No agent-warmup routines are recorded yet/);
+  assert.doesNotMatch(io.stdout, /Detected providers:/);
+  assert.doesNotMatch(io.stdout, /Suggestions:/);
 });
 
 test('setup dry-run for Claude prints schedule and native action without creating it', async () => {
@@ -311,50 +342,6 @@ test('setup Codex with injected native creator writes metadata', async () => {
   assert.match(fs.writeCalls[0].contents, /"automationName": "Agent Warmup"/);
 });
 
-test('status prints provider availability and current config JSON from injected config path', async () => {
-  const configPath = '/tmp/agent-warmup/config.json';
-  const fs = createMemoryFs({
-    '/bin/claude': '',
-    '/home/alex/.claude': '',
-    [configPath]: JSON.stringify({
-      version: 1,
-      providers: {
-        claude: {
-          enabled: true,
-          routineName: 'Agent Warmup',
-          schedule: 'daily at 09:00',
-          promptHash: 'sha256:test',
-        },
-      },
-    }),
-  });
-  const io = createIo();
-
-  const exitCode = await runCli(['status'], {
-    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
-    fs,
-    io,
-    platform: 'linux',
-    spawnSync: createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' }).spawnSync,
-  });
-
-  assert.equal(exitCode, 0);
-  assert.match(io.stdout, /claude: installed \(2\.1\.104 \(Claude Code\)\); local state found/);
-  assert.match(io.stdout, /codex: missing; local state missing/);
-  assert.match(io.stdout, /Metadata:/);
-  assert.deepEqual(metadataFromStatus(io.stdout), {
-    version: 1,
-    providers: {
-      claude: {
-        enabled: true,
-        routineName: 'Agent Warmup',
-        schedule: 'daily at 09:00',
-        promptHash: 'sha256:test',
-      },
-    },
-  });
-});
-
 test('unsupported provider returns nonzero with a useful stderr message', async () => {
   const io = createIo();
 
@@ -389,30 +376,6 @@ test('setup without enough history and no time asks for explicit time', async ()
   assert.equal(exitCode, 1);
   assert.match(io.stdout, /insufficient history/i);
   assert.match(io.stdout, /Re-run with --time HH:MM/);
-});
-
-test('update dry-run for Claude routes through setup behavior', async () => {
-  const fs = createMemoryFs({
-    '/bin/claude': '',
-    '/home/alex/.claude': '',
-  });
-  const io = createIo();
-  const spawn = createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' });
-
-  const exitCode = await runCli(
-    ['update', '--provider', 'claude', '--time', '09:00', '--dry-run'],
-    {
-      env: { HOME: '/home/alex', PATH: '/bin' },
-      fs,
-      io,
-      platform: 'linux',
-      spawnSync: spawn.spawnSync,
-    },
-  );
-
-  assert.equal(exitCode, 0);
-  assert.match(io.stdout, /DRY RUN/);
-  assert.match(io.stdout, /Native action: claude "\/schedule daily at 09:00/);
 });
 
 test('remove deletes local provider metadata and prints native removal instructions', async () => {
@@ -495,7 +458,7 @@ test('Claude schedule failure reports likely documented causes', async () => {
 test('lead minutes rejects partial integer values', async () => {
   const io = createIo();
 
-  const exitCode = await runCli(['plan', '--provider', 'claude', '--lead-minutes', '1abc'], {
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--lead-minutes', '1abc'], {
     env: { HOME: '/home/alex', PATH: '/bin' },
     fs: createMemoryFs(),
     io,
@@ -510,7 +473,7 @@ test('lead minutes rejects partial integer values', async () => {
 test('lead minutes rejects negative values', async () => {
   const io = createIo();
 
-  const exitCode = await runCli(['plan', '--provider', 'claude', '--lead-minutes', '-40'], {
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--lead-minutes', '-40'], {
     env: { HOME: '/home/alex', PATH: '/bin' },
     fs: createMemoryFs(),
     io,
@@ -522,13 +485,26 @@ test('lead minutes rejects negative values', async () => {
   assert.match(io.stderr, /0\.\.1440/);
 });
 
-test('runCli prints usage when invoked with no args', async () => {
+test('removed commands return nonzero and point to the simplified command set', async () => {
+  for (const command of ['detect', 'plan', 'status', 'update']) {
+    const io = createIo();
+
+    const exitCode = await runCli([command], { io });
+
+    assert.equal(exitCode, 1);
+    assert.match(io.stderr, new RegExp(`Unknown command: ${command}`));
+    assert.match(io.stdout, /^Usage: agent-warmup \[setup\|remove\]/);
+    assert.doesNotMatch(io.stdout, /detect|plan|status|update/);
+  }
+});
+
+test('help prints the simplified command set', async () => {
   const io = createIo();
 
-  const exitCode = await runCli([], { io });
+  const exitCode = await runCli(['--help'], { io });
 
   assert.equal(exitCode, 0);
-  assert.match(io.stdout, /^Usage: agent-warmup/);
-  assert.match(io.stdout, /update/);
+  assert.match(io.stdout, /^Usage: agent-warmup \[setup\|remove\]/);
   assert.match(io.stdout, /remove/);
+  assert.doesNotMatch(io.stdout, /detect|plan|status|update/);
 });
