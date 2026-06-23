@@ -14,7 +14,7 @@ test('package publishes only src and points bin at an executable CLI stub', asyn
   assert.deepEqual(packageJson.files, ['src']);
 
   const binTarget = packageJson.bin?.['agent-warmup'];
-  assert.equal(typeof binTarget, 'string');
+  assert.equal(binTarget, 'src/cli.js');
 
   const binPath = path.join(process.cwd(), binTarget);
   await access(binPath);

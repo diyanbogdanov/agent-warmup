@@ -7,7 +7,7 @@
     "src"
   ],
   "bin": {
-    "agent-warmup": "./src/cli.js"
+    "agent-warmup": "src/cli.js"
   },
   "repository": {
     "type": "git",
