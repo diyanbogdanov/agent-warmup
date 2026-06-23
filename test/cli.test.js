@@ -33,6 +33,14 @@ function createMemoryFs(entries = {}) {
       files.set(newPath, files.get(oldPath));
       files.delete(oldPath);
     },
+    rmSync(filePath, options) {
+      assert.deepEqual(options, { recursive: true, force: true });
+      for (const key of [...files.keys()]) {
+        if (key === filePath || key.startsWith(`${filePath}/`)) {
+          files.delete(key);
+        }
+      }
+    },
     readdirSync() {
       return [];
     },
@@ -268,6 +276,37 @@ test('default command shows routines recorded by agent-warmup', async () => {
   assert.doesNotMatch(io.stdout, /Suggestions:/);
 });
 
+test('default command verifies recorded Codex native automation file', async () => {
+  const configPath = '/tmp/agent-warmup/config.json';
+  const fs = createMemoryFs({
+    '/state/codex/automations/agent-warmup/automation.toml': 'id = "agent-warmup"\n',
+    [configPath]: JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          enabled: true,
+          automationName: 'Agent Warmup',
+          schedule: 'daily at 18:45',
+          promptHash: 'sha256:codex',
+        },
+      },
+    }),
+  });
+  const io = createIo();
+
+  const exitCode = await runCli([], {
+    env: { CODEX_HOME: '/state/codex', HOME: '/home/alex', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(io.stdout, /codex: Agent Warmup, daily at 18:45/);
+  assert.match(io.stdout, /native file found/);
+  assert.doesNotMatch(io.stdout, /native status not verified/);
+});
+
 test('setup dry-run for Claude prints schedule and native action without creating it', async () => {
   const fs = createMemoryFs({
     '/bin/claude': '',
@@ -292,36 +331,116 @@ test('setup dry-run for Claude prints schedule and native action without creatin
   assert.match(io.stdout, /Schedule: daily at 09:00/);
   assert.match(io.stdout, /Prompt:/);
   assert.match(io.stdout, /consume normal plan usage/);
-  assert.match(io.stdout, /claude "\/schedule daily at 09:00/);
+  assert.match(io.stdout, /claude "-p" "--model" "sonnet" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00/);
   assert.deepEqual(
     spawn.calls.map((call) => [call.command, call.args]),
     [['/bin/claude', ['--version']]],
   );
 });
 
-test('setup without yes requires typed confirmation before creating Claude routine', async () => {
+test('setup creates Claude routine through non-interactive print mode', async () => {
   const fs = createMemoryFs({
     '/bin/claude': '',
     '/home/alex/.claude': '',
   });
   const io = createIo('no');
-  const spawn = createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' });
+  const spawnCalls = [];
+  const spawnSync = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+
+    if (args.length === 1 && args[0] === '--version') {
+      return { status: 0, stdout: '2.1.104 (Claude Code)\n' };
+    }
+
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result:
+          'Routine created successfully. Routine ID: trig_123. URL: https://claude.ai/code/routines/trig_123',
+      }),
+    };
+  };
 
   const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00'], {
     env: { HOME: '/home/alex', PATH: '/bin' },
     fs,
     io,
     platform: 'linux',
-    spawnSync: spawn.spawnSync,
+    spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.doesNotMatch(io.stdout, /Type "create" to continue/);
+  assert.doesNotMatch(io.stdout, /Aborted/);
+  assert.match(io.stdout, /Created Claude Code Routine/);
+  assert.match(io.stdout, /https:\/\/claude\.ai\/code\/routines\/trig_123/);
+  assert.deepEqual(
+    spawnCalls.map((call) => [call.command, call.args, call.options]),
+    [
+      [
+        '/bin/claude',
+        ['--version'],
+        {
+          encoding: 'utf8',
+          env: { HOME: '/home/alex', PATH: '/bin' },
+        },
+      ],
+      [
+        '/bin/claude',
+        [
+          '-p',
+          '--model',
+          'sonnet',
+          '--effort',
+          'low',
+          '--output-format',
+          'json',
+          '/schedule daily at 09:00 Reply with exactly: ok Do not inspect files, do not run commands, do not modify anything, and do not use connectors or tools.',
+        ],
+        {
+          encoding: 'utf8',
+          env: { HOME: '/home/alex', PATH: '/bin' },
+        },
+      ],
+    ],
+  );
+});
+
+test('setup does not record Claude metadata when print mode exits without creating a routine', async () => {
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/home/alex/.claude': '',
+  });
+  const io = createIo();
+
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00'], {
+    env: { HOME: '/home/alex', PATH: '/bin' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync(command, args) {
+      if (args.length === 1 && args[0] === '--version') {
+        return { status: 0, stdout: '2.1.104 (Claude Code)\n' };
+      }
+
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: 'What would you like to do with scheduled cloud agents?',
+        }),
+      };
+    },
   });
 
   assert.equal(exitCode, 1);
-  assert.match(io.stdout, /Type "create" to continue/);
-  assert.match(io.stdout, /Aborted/);
-  assert.deepEqual(
-    spawn.calls.map((call) => [call.command, call.args]),
-    [['/bin/claude', ['--version']]],
-  );
+  assert.equal(fs.writeCalls.length, 0);
+  assert.match(io.stderr, /did not confirm routine creation/);
 });
 
 test('setup Claude on Windows uses detected cmd shim before writing metadata', async () => {
@@ -341,10 +460,19 @@ test('setup Claude on Windows uses detected cmd shim before writing metadata', a
 
     assert.equal(fs.writeCalls.length, 0);
     assert.equal(fs.renameCalls.length, 0);
-    return { status: 0, stdout: '' };
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result:
+          'Routine created successfully. Routine ID: trig_win. URL: https://claude.ai/code/routines/trig_win',
+      }),
+    };
   };
 
-  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00', '--yes'], {
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00'], {
     env: {
       APPDATA: 'C:\\Users\\Alex\\AppData\\Roaming',
       Path: 'C:\\Tools',
@@ -374,7 +502,7 @@ test('setup Claude on Windows uses detected cmd shim before writing metadata', a
   });
   assert.equal(spawnCalls[1].command, 'cmd.exe');
   assert.deepEqual(spawnCalls[1].args.slice(0, 3), ['/d', '/s', '/c']);
-  assert.match(spawnCalls[1].args[3], /^"C:\\Tools\\claude\.CMD" "\/schedule daily at 09:00 /);
+  assert.match(spawnCalls[1].args[3], /^"C:\\Tools\\claude\.CMD" "-p" "--model" "sonnet" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00 /);
   assert.deepEqual(spawnCalls[1].options, {
     encoding: 'utf8',
     env: {
@@ -383,13 +511,12 @@ test('setup Claude on Windows uses detected cmd shim before writing metadata', a
       PATHEXT: '.CMD',
       USERPROFILE: 'C:\\Users\\Alex',
     },
-    stdio: 'inherit',
   });
   assert.equal(fs.writeCalls.length, 1);
   assert.equal(fs.renameCalls.length, 1);
 });
 
-test('setup dry-run for Codex prints fallback automation instructions', async () => {
+test('setup dry-run for Codex previews native automation file creation', async () => {
   const fs = createMemoryFs({
     '/bin/codex': '',
     '/home/alex/.codex': '',
@@ -409,33 +536,169 @@ test('setup dry-run for Codex prints fallback automation instructions', async ()
   );
 
   assert.equal(exitCode, 0);
-  assert.match(io.stdout, /Open a Codex thread/);
+  assert.match(io.stdout, /DRY RUN/);
+  assert.match(io.stdout, /Create native Codex Automation/);
+  assert.match(io.stdout, /automation\.toml/);
   assert.match(io.stdout, /Agent Warmup/);
+  assert.doesNotMatch(io.stdout, /Open a Codex thread/);
   assert.equal(fs.writeCalls.length, 0);
   assert.equal(fs.renameCalls.length, 0);
 });
 
-test('setup Codex with yes prints fallback without recording metadata', async () => {
+test('setup Codex creates a native automation file without agent-warmup confirmation', async () => {
   const fs = createMemoryFs({
     '/bin/codex': '',
     '/home/alex/.codex': '',
   });
-  const io = createIo();
+  const io = createIo('no');
   const spawn = createSpawn({ '/bin/codex': '0.46.0' });
 
-  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00', '--yes'], {
+  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00'], {
+    cwd: '/work/project',
+    env: { CODEX_HOME: '/state/codex', HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    now: () => 1781379056290,
+    spawnSync: spawn.spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.doesNotMatch(io.stdout, /Open a Codex thread/);
+  assert.doesNotMatch(io.stdout, /Type "create" to continue/);
+  assert.doesNotMatch(io.stdout, /Aborted/);
+  assert.match(io.stdout, /Native file: \/state\/codex\/automations\/agent-warmup\/automation\.toml/);
+  assert.match(io.stdout, /Workspace: \/work\/project/);
+  assert.equal(fs.writeCalls.length, 2);
+  assert.equal(fs.renameCalls.length, 2);
+  assert.match(fs.writeCalls[0].filePath, /\/state\/codex\/automations\/agent-warmup\/\.automation\.toml\./);
+  assert.match(fs.writeCalls[0].contents, /id = "agent-warmup"/);
+  assert.match(fs.writeCalls[0].contents, /name = "Agent Warmup"/);
+  assert.match(fs.writeCalls[0].contents, /status = "ACTIVE"/);
+  assert.match(
+    fs.writeCalls[0].contents,
+    /rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=0"/,
+  );
+  assert.match(fs.writeCalls[0].contents, /execution_environment = "local"/);
+  assert.match(fs.writeCalls[0].contents, /cwds = \["\/work\/project"\]/);
+  assert.match(fs.writeCalls[1].contents, /"automationName": "Agent Warmup"/);
+});
+
+test('setup creates Codex automation before launching Claude interactive scheduler', async () => {
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/bin/codex': '',
+    '/home/alex/.claude': '',
+    '/home/alex/.codex': '',
+  });
+  const io = createIo();
+  const events = [];
+  const originalWriteFileSync = fs.writeFileSync.bind(fs);
+
+  fs.writeFileSync = (filePath, contents, encoding) => {
+    if (filePath.includes('/automations/agent-warmup/')) {
+      events.push('codex-automation-file');
+    }
+
+    originalWriteFileSync(filePath, contents, encoding);
+  };
+
+  const exitCode = await runCli(['setup', '--time', '09:00'], {
+    cwd: '/work/project',
+    env: { CODEX_HOME: '/state/codex', HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync(command, args) {
+      if (args.length === 1 && args[0] === '--version') {
+        return { status: 0, stdout: `${command} 1.0.0\n` };
+      }
+
+      if (command === '/bin/claude' && args.includes('-p')) {
+        events.push('claude-schedule');
+      }
+
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result:
+            'Routine created successfully. Routine ID: trig_order. URL: https://claude.ai/code/routines/trig_order',
+        }),
+      };
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(events, ['codex-automation-file', 'claude-schedule']);
+});
+
+test('setup refuses to overwrite recorded warmups before creating anything', async () => {
+  const configPath = '/tmp/agent-warmup/config.json';
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/bin/codex': '',
+    '/home/alex/.claude': '',
+    '/home/alex/.codex': '',
+    [configPath]: JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          enabled: true,
+          automationName: 'Agent Warmup',
+          schedule: 'daily at 18:45',
+          promptHash: 'sha256:codex',
+        },
+      },
+    }),
+  });
+  const io = createIo();
+  const spawnCalls = [];
+
+  const exitCode = await runCli(['setup', '--time', '09:00'], {
     env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
     fs,
     io,
     platform: 'linux',
-    spawnSync: spawn.spawnSync,
+    spawnSync(...args) {
+      spawnCalls.push(args);
+      return { status: 0, stdout: '' };
+    },
   });
 
   assert.equal(exitCode, 1);
-  assert.match(io.stdout, /Open a Codex thread/);
-  assert.match(io.stdout, /Codex automation was not created by this CLI/);
+  assert.match(io.stderr, /codex: existing agent-warmup setup found/);
+  assert.match(io.stderr, /agent-warmup remove --provider codex/);
+  assert.deepEqual(spawnCalls, []);
   assert.equal(fs.writeCalls.length, 0);
-  assert.equal(fs.renameCalls.length, 0);
+});
+
+test('setup refuses to overwrite native Codex automation even without local metadata', async () => {
+  const fs = createMemoryFs({
+    '/bin/codex': '',
+    '/home/alex/.codex': '',
+    '/state/codex/automations/agent-warmup/automation.toml': 'id = "agent-warmup"\n',
+  });
+  const io = createIo();
+  const spawnCalls = [];
+
+  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00'], {
+    env: { CODEX_HOME: '/state/codex', HOME: '/home/alex', PATH: '/bin' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync(...args) {
+      spawnCalls.push(args);
+      return { status: 0, stdout: '' };
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(io.stderr, /codex: existing agent-warmup setup found/);
+  assert.deepEqual(spawnCalls, []);
+  assert.equal(fs.writeCalls.length, 0);
 });
 
 test('setup Codex with injected native creator writes metadata', async () => {
@@ -447,7 +710,7 @@ test('setup Codex with injected native creator writes metadata', async () => {
   const spawn = createSpawn({ '/bin/codex': '0.46.0' });
   const createCalls = [];
 
-  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00', '--yes'], {
+  const exitCode = await runCli(['setup', '--provider', 'codex', '--time', '09:00'], {
     codexAutomationCreate(request) {
       createCalls.push(request);
       assert.equal(fs.writeCalls.length, 0);
@@ -513,6 +776,7 @@ test('setup without enough limit-hit history and no time asks for explicit time'
 test('remove deletes local provider metadata and prints native removal instructions', async () => {
   const configPath = '/tmp/agent-warmup/config.json';
   const fs = createMemoryFs({
+    '/home/alex/.codex/automations/agent-warmup/automation.toml': 'id = "agent-warmup"\n',
     [configPath]: JSON.stringify({
       version: 1,
       providers: {
@@ -555,6 +819,37 @@ test('remove deletes local provider metadata and prints native removal instructi
   });
 });
 
+test('remove deletes native Codex automation file created by setup', async () => {
+  const configPath = '/tmp/agent-warmup/config.json';
+  const fs = createMemoryFs({
+    '/state/codex/automations/agent-warmup/automation.toml': 'id = "agent-warmup"\n',
+    [configPath]: JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          enabled: true,
+          automationName: 'Agent Warmup',
+          schedule: 'daily at 10:00',
+          promptHash: 'sha256:codex',
+        },
+      },
+    }),
+  });
+  const io = createIo();
+
+  const exitCode = await runCli(['remove', '--provider', 'codex'], {
+    env: { CODEX_HOME: '/state/codex', HOME: '/home/alex', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(io.stdout, /Removed local metadata for codex/);
+  assert.match(io.stdout, /Removed native Codex Automation/);
+  assert.deepEqual(fs.writeCalls.length, 1);
+});
+
 test('Claude schedule failure reports likely documented causes', async () => {
   const fs = createMemoryFs({
     '/bin/claude': '',
@@ -563,7 +858,7 @@ test('Claude schedule failure reports likely documented causes', async () => {
   const io = createIo();
   const spawnCalls = [];
 
-  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00', '--yes'], {
+  const exitCode = await runCli(['setup', '--provider', 'claude', '--time', '09:00'], {
     env: { HOME: '/home/alex', PATH: '/bin' },
     fs,
     io,

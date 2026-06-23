@@ -16,6 +16,11 @@ import {
   writeConfig,
 } from './config.js';
 import {
+  codexAutomationExists,
+  removeCodexAutomation,
+  writeCodexAutomation,
+} from './codex-automation.js';
+import {
   DEFAULT_LIMIT_WINDOW_MINUTES,
   DEFAULT_PROMPT,
   DEFAULT_RESET_PADDING_MINUTES,
@@ -27,9 +32,10 @@ import { detectProvider, detectProviders } from './providers.js';
 import { inferWarmupTime } from './schedule.js';
 import { createUi } from './ui.js';
 
-const USAGE = 'Usage: agent-warmup [setup|remove] [--provider claude|codex] [--time HH:MM] [--window-minutes N] [--reset-padding-minutes N] [--dry-run] [--yes] [--plain]';
+const USAGE = 'Usage: agent-warmup [setup|remove] [--provider claude|codex] [--time HH:MM] [--window-minutes N] [--reset-padding-minutes N] [--dry-run] [--plain]';
 const MIN_LIMIT_HIT_DAYS = 5;
 const WARMUP_NAME = 'Agent Warmup';
+const CLAUDE_PRINT_MODE_ARGS = ['-p', '--model', 'sonnet', '--effort', 'low', '--output-format', 'json'];
 
 function defaultIo() {
   return {
@@ -151,6 +157,33 @@ function selectedProviders(provider) {
   return provider === null ? [...PROVIDERS] : [provider];
 }
 
+function selectedSetupProviders(provider) {
+  return provider === null ? ['codex', 'claude'] : [provider];
+}
+
+function providerHasExistingSetup(provider, config, { env, fs, platform }) {
+  if (config.providers[provider]) {
+    return true;
+  }
+
+  return provider === 'codex' && codexAutomationExists({ env, fs, platform });
+}
+
+function checkExistingSetups(providers, { config, env, fs, io, platform }) {
+  const existingProviders = providers.filter((provider) =>
+    providerHasExistingSetup(provider, config, { env, fs, platform }),
+  );
+
+  for (const provider of existingProviders) {
+    writeStderr(
+      io,
+      `${provider}: existing agent-warmup setup found. Run: agent-warmup remove --provider ${provider} before setup.\n`,
+    );
+  }
+
+  return existingProviders.length === 0;
+}
+
 function validateProvider(provider, io) {
   if (provider === null || PROVIDERS.includes(provider)) {
     return true;
@@ -187,7 +220,21 @@ function printDetection(io, result, ui = createUi({ io, plain: true })) {
   }
 }
 
-function printConfiguredProviders(io, config, ui = createUi({ io, plain: true })) {
+function nativeStatusText(provider, { env, fs, platform }) {
+  if (provider === 'codex') {
+    return codexAutomationExists({ env, fs, platform })
+      ? 'native file found'
+      : 'native file missing';
+  }
+
+  return 'native status not verified';
+}
+
+function printConfiguredProviders(
+  io,
+  config,
+  { env, fs, platform, ui = createUi({ io, plain: true }) } = {},
+) {
   const configured = PROVIDERS.filter((provider) => config.providers[provider]);
 
   if (configured.length === 0) {
@@ -200,18 +247,19 @@ function printConfiguredProviders(io, config, ui = createUi({ io, plain: true })
   for (const provider of configured) {
     const metadata = config.providers[provider];
     const name = provider === 'claude' ? metadata.routineName : metadata.automationName;
+    const nativeStatus = nativeStatusText(provider, { env, fs, platform });
 
     if (!ui.interactive) {
       writeStdout(
         io,
-        `  ${provider}: ${name || WARMUP_NAME}, ${metadata.schedule} (recorded by agent-warmup; native status not verified)\n`,
+        `  ${provider}: ${name || WARMUP_NAME}, ${metadata.schedule} (recorded by agent-warmup; ${nativeStatus})\n`,
       );
       continue;
     }
 
     writeStdout(
       io,
-      `  ${ui.symbol('ready')} ${providerLabel(provider)} ${ui.cyan(metadata.schedule)} ${ui.dim(`${name || WARMUP_NAME}; native status not verified`)}\n`,
+      `  ${ui.symbol('ready')} ${providerLabel(provider)} ${ui.cyan(metadata.schedule)} ${ui.dim(`${name || WARMUP_NAME}; ${nativeStatus}`)}\n`,
     );
   }
 
@@ -326,13 +374,8 @@ function buildClaudeSetupInvocation({ executable, platform, args }) {
   };
 }
 
-async function readConfirmation(io) {
-  if (!io.stdin || typeof io.stdin.read !== 'function') {
-    return '';
-  }
-
-  const value = await io.stdin.read();
-  return String(value || '').trim();
+function buildClaudePrintArgs(actionArgs) {
+  return [...CLAUDE_PRINT_MODE_ARGS, ...actionArgs];
 }
 
 function scheduleFromTime(time, io) {
@@ -451,6 +494,32 @@ function printClaudeScheduleFailure(io, status) {
   writeStderr(io, '\n');
 }
 
+function parseClaudePrintResult(stdout) {
+  if (!stdout.trim()) {
+    return { created: false, message: '' };
+  }
+
+  try {
+    const parsed = JSON.parse(stdout);
+    const message = String(parsed.result || '');
+
+    return {
+      created:
+        parsed.is_error !== true &&
+        (/https:\/\/claude\.ai\/code\/routines\/trig_[A-Za-z0-9]+/.test(message) ||
+          /\btrig_[A-Za-z0-9]+\b/.test(message)),
+      message,
+    };
+  } catch {
+    return {
+      created:
+        /https:\/\/claude\.ai\/code\/routines\/trig_[A-Za-z0-9]+/.test(stdout) ||
+        /\btrig_[A-Za-z0-9]+\b/.test(stdout),
+      message: stdout.trim(),
+    };
+  }
+}
+
 async function setupClaude({
   io,
   env,
@@ -461,40 +530,44 @@ async function setupClaude({
   schedule,
   prompt,
   dryRun,
-  yes,
 }) {
   const action = buildClaudeScheduleAction({ schedule, prompt });
+  const printArgs = buildClaudePrintArgs(action.args);
 
-  writeStdout(io, `Native action: ${action.command} ${action.args.map(shellQuote).join(' ')}\n`);
+  writeStdout(io, `Native action: ${action.command} ${printArgs.map(shellQuote).join(' ')}\n`);
 
   if (dryRun) {
     return 0;
   }
 
-  if (!yes) {
-    writeStdout(io, 'Type "create" to continue: ');
-    const confirmation = await readConfirmation(io);
-
-    if (confirmation !== 'create') {
-      writeStdout(io, 'Aborted\n');
-      return 1;
-    }
-  }
-
   const invocation = buildClaudeSetupInvocation({
     executable,
     platform,
-    args: action.args,
+    args: printArgs,
   });
   const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8',
     env,
-    stdio: 'inherit',
   });
 
   if (result.status !== 0) {
     printClaudeScheduleFailure(io, result.status);
     return 1;
+  }
+
+  const printResult = parseClaudePrintResult(result.stdout || '');
+  if (!printResult.created) {
+    writeStderr(
+      io,
+      'Claude schedule command exited but did not confirm routine creation. Native output was:\n',
+    );
+    writeStderr(io, `${printResult.message || result.stdout || result.stderr || '(empty output)'}\n`);
+    return 1;
+  }
+
+  writeStdout(io, 'Created Claude Code Routine.\n');
+  if (printResult.message) {
+    writeStdout(io, `${printResult.message}\n`);
   }
 
   writeProviderConfig('claude', { env, platform, fs, schedule, prompt });
@@ -506,30 +579,21 @@ async function setupCodex({
   env,
   platform,
   fs,
+  cwd,
+  now,
   schedule,
   prompt,
   dryRun,
-  yes,
   codexAutomationCreate,
 }) {
   const action = buildCodexAutomationAction({ schedule, prompt });
 
   if (dryRun) {
-    writeStdout(io, `${action.fallback}\n`);
+    writeStdout(io, `${action.description}\n`);
     return 0;
   }
 
   if (typeof codexAutomationCreate === 'function') {
-    if (!yes) {
-      writeStdout(io, 'Type "create" to continue: ');
-      const confirmation = await readConfirmation(io);
-
-      if (confirmation !== 'create') {
-        writeStdout(io, 'Aborted\n');
-        return 1;
-      }
-    }
-
     await codexAutomationCreate({
       name: WARMUP_NAME,
       schedule,
@@ -539,36 +603,28 @@ async function setupCodex({
     return 0;
   }
 
-  writeStdout(io, `${action.fallback}\n`);
-
-  if (yes) {
-    writeStdout(
-      io,
-      'Codex automation was not created by this CLI. Create it in Codex, then type "create" to record local metadata.\n',
-    );
-    return 1;
-  }
-
-  writeStdout(
-    io,
-    'Codex automation was not created by this CLI. Create it in Codex, then type "create" to record local metadata: ',
-  );
-  const confirmation = await readConfirmation(io);
-
-  if (confirmation !== 'create') {
-    writeStdout(io, 'Aborted\n');
-    return 1;
-  }
-
+  const automation = writeCodexAutomation({ cwd, env, fs, now, platform, prompt, schedule });
+  writeStdout(io, `Created Codex Automation: ${automation.id}\n`);
+  writeStdout(io, `Native file: ${automation.filePath}\n`);
+  writeStdout(io, `Workspace: ${cwd}\n`);
   writeProviderConfig('codex', { env, platform, fs, schedule, prompt });
   return 0;
 }
 
 async function runSetup(parsed, deps) {
-  const { env, platform, fs: depFs, spawnSync, io, codexAutomationCreate } = deps;
+  const { env, platform, fs: depFs, spawnSync, io, codexAutomationCreate, cwd, now } = deps;
   let exitCode = 0;
+  const providers = selectedSetupProviders(parsed.provider);
 
-  for (const provider of selectedProviders(parsed.provider)) {
+  if (!parsed.dryRun) {
+    const config = readConfig(configFilePath({ env, platform }), { fs: depFs });
+
+    if (!checkExistingSetups(providers, { config, env, fs: depFs, io, platform })) {
+      return 1;
+    }
+  }
+
+  for (const provider of providers) {
     const providerInfo = detectProvider(provider, {
       env,
       platform,
@@ -618,17 +674,17 @@ async function runSetup(parsed, deps) {
             schedule,
             prompt,
             dryRun: parsed.dryRun,
-            yes: parsed.yes,
           })
         : await setupCodex({
             io,
             env,
             platform,
             fs: depFs,
+            cwd,
+            now,
             schedule,
             prompt,
             dryRun: parsed.dryRun,
-            yes: parsed.yes,
             codexAutomationCreate,
           });
 
@@ -652,6 +708,16 @@ function runRemove(parsed, deps) {
       writeStdout(io, `No local metadata found for ${provider}.\n`);
     }
 
+    if (provider === 'codex') {
+      if (removeCodexAutomation({ env, platform, fs: depFs })) {
+        writeStdout(io, 'Removed native Codex Automation.\n');
+      } else {
+        printNativeRemovalInstructions(io, provider);
+      }
+
+      continue;
+    }
+
     printNativeRemovalInstructions(io, provider);
   }
 
@@ -666,7 +732,12 @@ function runDashboard(parsed, deps) {
 
   writeStdout(io, `${ui.bold(ui.cyan('Agent Warmup'))}\n`);
 
-  const configuredCount = printConfiguredProviders(io, config, ui);
+  const configuredCount = printConfiguredProviders(io, config, {
+    env,
+    fs: depFs,
+    platform,
+    ui,
+  });
 
   if (configuredCount > 0) {
     return 0;
@@ -710,6 +781,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   const depFs = deps.fs || fs;
   const spawnSync = deps.spawnSync || nodeSpawnSync;
   const codexAutomationCreate = deps.codexAutomationCreate;
+  const cwd = deps.cwd || process.cwd();
+  const now = deps.now || Date.now;
   const parsed = parseArgs(argv);
   const normalizedDeps = {
     env,
@@ -718,6 +791,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     spawnSync,
     io,
     codexAutomationCreate,
+    cwd,
+    now,
   };
 
   if (parsed.command === 'help' || parsed.command === '--help' || parsed.command === '-h') {

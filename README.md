@@ -5,12 +5,11 @@ NPX-friendly setup CLI for native Claude Code Routines and Codex Automations.
 ## What it does
 
 - Shows installed `claude` and `codex` providers.
-- Looks at local state file modification times and explicit timestamped usage-limit markers.
+- Looks at explicit timestamped usage-limit markers in local harness state.
 - Suggests a daily warmup time that targets reset shortly after the usual usage-limit hit.
 - Creates a Claude Code Routine through the native `/schedule` flow.
-- Creates a Codex Automation when the host environment exposes a native automation creator.
-- Provides native Codex Automation instructions when direct creation is unavailable from a plain terminal.
-- Records local metadata for created or manually confirmed warmup schedules so it can show routines/automations created by `agent-warmup`.
+- Creates a Codex Automation by writing the native Codex automation record under `$CODEX_HOME/automations`, or `~/.codex/automations` when `CODEX_HOME` is unset.
+- Records local metadata for warmup schedules created by `agent-warmup`.
 
 ## What it does not do
 
@@ -18,7 +17,7 @@ NPX-friendly setup CLI for native Claude Code Routines and Codex Automations.
 - Does not create cron, launchd, systemd, Windows Task Scheduler, GitHub Actions, or Cloudflare Workers jobs.
 - Does not store provider credentials.
 - Does not store prompt or response contents.
-- Does not guarantee a reset window starts or improves; it creates or guides native scheduled warmup runs only.
+- Does not guarantee a reset window starts or improves; it creates native scheduled warmup runs only.
 
 ## Usage
 
@@ -38,11 +37,21 @@ To create a Claude Code Routine:
 npx agent-warmup setup --provider claude --time 09:00
 ```
 
-Type `create` when prompted to continue.
+Claude setup runs Claude Code in non-interactive print mode, so it should return to your shell after creating the routine instead of leaving you inside a Claude Code session.
 
-Use `remove` to delete local agent-warmup metadata. It does not delete native Claude Code Routines or Codex Automations; it prints provider-specific instructions for removing or pausing those native schedules.
+To create a Codex Automation:
 
-For Codex in plain-terminal mode, the CLI prints native Codex Automation instructions instead of directly creating the automation. `--yes` does not mark Codex configured in this fallback mode because the CLI cannot prove the automation was created; type `create` after manually creating it to record local metadata.
+```bash
+npx agent-warmup setup --provider codex --time 09:00
+```
+
+Codex Automations are attached to the directory where you run `agent-warmup setup`. The setup output prints both the native automation file and the workspace path so you can verify where Codex will run it.
+
+Use `--dry-run` to preview the native action without creating anything.
+
+`setup` does not overwrite existing agent-warmup routines or automations. Run `agent-warmup remove --provider claude` or `agent-warmup remove --provider codex` first, then run setup again.
+
+Use `remove` to delete local agent-warmup metadata. For Codex, it also removes the native `agent-warmup` automation file. For Claude Code, it prints provider-specific instructions because Claude Code does not expose a routine deletion command through the CLI.
 
 Claude Code Routines consume normal Claude plan usage. Codex Automations consume normal Codex usage and can affect weekly usage limits.
 

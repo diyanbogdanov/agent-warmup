@@ -11,24 +11,18 @@ export function buildClaudeScheduleAction({ schedule, prompt }) {
 }
 
 export function buildCodexAutomationAction({ schedule, prompt }) {
-  const instruction = [
-    'Create a standalone Codex Automation named "Agent Warmup".',
+  const description = [
+    'Create native Codex Automation "Agent Warmup".',
     `Run it ${schedule}.`,
+    'Write $CODEX_HOME/automations/agent-warmup/automation.toml, or ~/.codex/automations/agent-warmup/automation.toml when CODEX_HOME is unset.',
     'Use this prompt:',
     prompt,
   ].join('\n');
-  const fallback = [
-    'Open a Codex thread and paste this request:',
-    '',
-    instruction,
-    '',
-    'If Codex asks for confirmation, approve only the native automation creation. Do not approve file edits or shell commands for this warmup.',
-  ].join('\n');
 
   return {
-    kind: 'codex-automation',
-    instruction,
-    fallback,
+    kind: 'codex-automation-file',
+    id: 'agent-warmup',
+    description,
   };
 }
 
@@ -38,7 +32,7 @@ export function usageWarning(provider) {
   }
 
   if (provider === 'codex') {
-    return 'This will create or guide a Codex Automation. Automation runs consume normal Codex plan usage, and Codex usage can also count against weekly usage limits.';
+    return 'This will create a Codex Automation. Automation runs consume normal Codex plan usage, and Codex usage can also count against weekly usage limits.';
   }
 
   return null;

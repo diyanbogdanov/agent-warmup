@@ -37,17 +37,16 @@ test('buildClaudeScheduleAction normalizes multiline prompt whitespace into one 
   assert.doesNotMatch(action.args[0], /\s{2,}/);
 });
 
-test('buildCodexAutomationAction creates a Codex automation instruction and fallback', () => {
+test('buildCodexAutomationAction describes the native Codex automation file action', () => {
   const prompt = 'Reply with exactly: ok';
   const action = buildCodexAutomationAction({ schedule: 'daily at 09:00', prompt });
 
-  assert.equal(action.kind, 'codex-automation');
-  assert.match(
-    action.instruction,
-    /Create a standalone Codex Automation named "Agent Warmup"/,
-  );
-  assert.match(action.instruction, /daily at 09:00/);
-  assert.match(action.fallback, /Open a Codex thread/);
+  assert.equal(action.kind, 'codex-automation-file');
+  assert.equal(action.id, 'agent-warmup');
+  assert.match(action.description, /Create native Codex Automation "Agent Warmup"/);
+  assert.match(action.description, /daily at 09:00/);
+  assert.match(action.description, /automation\.toml/);
+  assert.doesNotMatch(action.description, /Open a Codex thread/);
 });
 
 test('usageWarning describes Claude routine plan usage', () => {

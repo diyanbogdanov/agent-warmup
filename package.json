@@ -9,6 +9,14 @@
   "bin": {
     "agent-warmup": "./src/cli.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diyanbogdanov/harness-reset.git"
+  },
+  "bugs": {
+    "url": "https://github.com/diyanbogdanov/harness-reset/issues"
+  },
+  "homepage": "https://github.com/diyanbogdanov/harness-reset#readme",
   "scripts": {
     "test": "node --test",
     "lint": "node --check src/*.js && node --check test/*.test.js"
