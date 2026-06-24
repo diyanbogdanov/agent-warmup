@@ -203,6 +203,29 @@ test('default command shows suggestions when no agent-warmup setup is recorded',
   );
 });
 
+test('default command suggests warmup from one limit-hit day instead of forcing manual time', async () => {
+  const fs = createSetupHistoryFs({
+    binaryPath: '/bin/claude',
+    stateDir: '/home/alex/.claude',
+    sessionContents: '{"timestamp":"2026-06-10T17:22:00","message":"Usage limit reached. Please try again later."}',
+  });
+  const io = createIo();
+  const spawn = createSpawn({ '/bin/claude': '2.1.104 (Claude Code)' });
+
+  const exitCode = await runCli([], {
+    env: { HOME: '/home/alex', PATH: '/bin' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync: spawn.spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(io.stdout, /claude: daily at 12:32 based on 1 limit-hit day/);
+  assert.doesNotMatch(io.stdout, /insufficient usage-limit hit history/);
+  assert.doesNotMatch(io.stdout, /--time HH:MM/);
+});
+
 test('default command renders a polished interactive dashboard when stdout is a TTY', async () => {
   const fs = createMemoryFs({
     '/bin/claude': '',
@@ -494,6 +517,49 @@ test('setup creates a Claude routine for each inferred warmup schedule', async (
   assert.match(routineCalls[0].args.at(-1), /^\/schedule daily at 06:10 /);
   assert.match(routineCalls[1].args.at(-1), /^\/schedule daily at 11:11 /);
   assert.match(fs.writeCalls.at(-1).contents, /"schedules": \[\n\s+"daily at 06:10",\n\s+"daily at 11:11"\n\s+\]/);
+});
+
+test('setup infers a Claude routine from one limit-hit day', async () => {
+  const fs = createSetupHistoryFs({
+    binaryPath: '/bin/claude',
+    stateDir: '/home/alex/.claude',
+    sessionContents: '{"timestamp":"2026-06-10T17:22:00","message":"Usage limit reached. Please try again later."}',
+  });
+  const io = createIo();
+  const spawnCalls = [];
+  const spawnSync = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+
+    if (args.length === 1 && args[0] === '--version') {
+      return { status: 0, stdout: '2.1.104 (Claude Code)\n' };
+    }
+
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result:
+          'Routine created successfully. Routine ID: trig_one_day. URL: https://claude.ai/code/routines/trig_one_day',
+      }),
+    };
+  };
+
+  const exitCode = await runCli(['setup', '--provider', 'claude'], {
+    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync,
+  });
+
+  assert.equal(exitCode, 0);
+  const routineCalls = spawnCalls.filter((call) => call.args.includes('-p'));
+  assert.equal(routineCalls.length, 1);
+  assert.match(io.stdout, /Schedule: daily at 12:32/);
+  assert.doesNotMatch(io.stdout, /insufficient usage-limit hit history/);
+  assert.match(routineCalls[0].args.at(-1), /^\/schedule daily at 12:32 /);
 });
 
 test('setup does not record Claude metadata when print mode exits without creating a routine', async () => {

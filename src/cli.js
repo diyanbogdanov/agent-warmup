@@ -35,7 +35,7 @@ import { inferWarmupTime } from './schedule.js';
 import { createUi } from './ui.js';
 
 const USAGE = 'Usage: agent-warmup [setup|remove] [--provider claude|codex] [--time HH:MM] [--window-minutes N] [--reset-padding-minutes N] [--dry-run] [--plain]';
-const MIN_LIMIT_HIT_DAYS = 5;
+const MIN_LIMIT_HIT_DAYS = 1;
 const WARMUP_NAME = 'Agent Warmup';
 const CLAUDE_PRINT_MODE_ARGS = ['-p', '--model', 'fable', '--effort', 'low', '--output-format', 'json'];
 
@@ -232,6 +232,10 @@ function nativeStatusText(provider, { env, fs, platform }) {
   return 'native status not verified';
 }
 
+function formatLimitHitDayCount(days) {
+  return `${days} limit-hit ${days === 1 ? 'day' : 'days'}`;
+}
+
 function printConfiguredProviders(
   io,
   config,
@@ -334,7 +338,7 @@ function printSetupSuggestions(
       writeStdout(io, `    Warmup       ${ui.cyan(scheduleResult.schedule)}\n`);
       writeStdout(io, `    Limit hit    ${scheduleResult.limitHit}\n`);
       writeStdout(io, `    Target reset ${scheduleResult.targetReset}\n`);
-      writeStdout(io, `    Evidence     ${scheduleResult.limitHitDays} limit-hit days\n`);
+      writeStdout(io, `    Evidence     ${formatLimitHitDayCount(scheduleResult.limitHitDays)}\n`);
       writeStdout(
         io,
         `    Run          ${ui.cyan(`agent-warmup setup --provider ${result.provider}`)}\n`,
@@ -345,7 +349,7 @@ function printSetupSuggestions(
     if (!ui.interactive) {
       writeStdout(
         io,
-        `  ${result.provider}: ${scheduleResult.schedule} based on ${scheduleResult.limitHitDays} limit-hit days; usual limit hit ${scheduleResult.limitHit}, target reset ${scheduleResult.targetReset}. Run: agent-warmup setup --provider ${result.provider}\n`,
+        `  ${result.provider}: ${scheduleResult.schedule} based on ${formatLimitHitDayCount(scheduleResult.limitHitDays)}; usual limit hit ${scheduleResult.limitHit}, target reset ${scheduleResult.targetReset}. Run: agent-warmup setup --provider ${result.provider}\n`,
       );
       continue;
     }
