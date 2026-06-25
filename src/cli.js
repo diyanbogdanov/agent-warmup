@@ -37,7 +37,7 @@ import { createUi } from './ui.js';
 const USAGE = 'Usage: agent-warmup [setup|remove] [--provider claude|codex] [--time HH:MM] [--window-minutes N] [--reset-padding-minutes N] [--dry-run] [--plain]';
 const MIN_LIMIT_HIT_DAYS = 1;
 const WARMUP_NAME = 'Agent Warmup';
-const CLAUDE_PRINT_MODE_ARGS = ['-p', '--model', 'fable', '--effort', 'low', '--output-format', 'json'];
+const CLAUDE_PRINT_MODE_ARGS = ['-p', '--model', 'haiku', '--effort', 'low', '--output-format', 'json'];
 
 function defaultIo() {
   return {
@@ -656,6 +656,7 @@ async function runSetup(parsed, deps) {
   const { env, platform, fs: depFs, spawnSync, io, codexAutomationCreate, cwd, now } = deps;
   let exitCode = 0;
   const providers = selectedSetupProviders(parsed.provider);
+  const multiProviderSetup = providers.length > 1;
 
   if (!parsed.dryRun) {
     const config = readConfig(configFilePath({ env, platform }), { fs: depFs });
@@ -690,6 +691,11 @@ async function runSetup(parsed, deps) {
         : scheduleFromTime(parsed.time, io);
 
     if (scheduleResult === null) {
+      exitCode = 1;
+      if (multiProviderSetup) {
+        continue;
+      }
+
       return 1;
     }
 
@@ -704,33 +710,45 @@ async function runSetup(parsed, deps) {
       dryRun: parsed.dryRun,
     });
 
-    const providerExitCode =
-      provider === 'claude'
-        ? await setupClaude({
-            io,
-            env,
-            platform,
-            fs: depFs,
-            spawnSync,
-            executable: providerInfo.executable,
-            schedule,
-            schedules,
-            prompt,
-            dryRun: parsed.dryRun,
-          })
-        : await setupCodex({
-            io,
-            env,
-            platform,
-            fs: depFs,
-            cwd,
-            now,
-            schedule,
-            schedules,
-            prompt,
-            dryRun: parsed.dryRun,
-            codexAutomationCreate,
-          });
+    let providerExitCode;
+    try {
+      providerExitCode =
+        provider === 'claude'
+          ? await setupClaude({
+              io,
+              env,
+              platform,
+              fs: depFs,
+              spawnSync,
+              executable: providerInfo.executable,
+              schedule,
+              schedules,
+              prompt,
+              dryRun: parsed.dryRun,
+            })
+          : await setupCodex({
+              io,
+              env,
+              platform,
+              fs: depFs,
+              cwd,
+              now,
+              schedule,
+              schedules,
+              prompt,
+              dryRun: parsed.dryRun,
+              codexAutomationCreate,
+            });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeStderr(io, `${provider} setup failed: ${message}\n`);
+      exitCode = 1;
+      if (multiProviderSetup) {
+        continue;
+      }
+
+      return 1;
+    }
 
     if (providerExitCode !== 0) {
       exitCode = providerExitCode;

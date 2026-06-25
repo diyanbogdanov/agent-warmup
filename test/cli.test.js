@@ -387,7 +387,7 @@ test('setup dry-run for Claude prints schedule and native action without creatin
   assert.match(io.stdout, /Schedule: daily at 09:00/);
   assert.match(io.stdout, /Prompt:/);
   assert.match(io.stdout, /consume normal plan usage/);
-  assert.match(io.stdout, /claude "-p" "--model" "fable" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00/);
+  assert.match(io.stdout, /claude "-p" "--model" "haiku" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00/);
   assert.deepEqual(
     spawn.calls.map((call) => [call.command, call.args]),
     [['/bin/claude', ['--version']]],
@@ -449,7 +449,7 @@ test('setup creates Claude routine through non-interactive print mode', async ()
         [
           '-p',
           '--model',
-          'fable',
+          'haiku',
           '--effort',
           'low',
           '--output-format',
@@ -655,7 +655,7 @@ test('setup Claude on Windows uses detected cmd shim before writing metadata', a
   });
   assert.equal(spawnCalls[1].command, 'cmd.exe');
   assert.deepEqual(spawnCalls[1].args.slice(0, 3), ['/d', '/s', '/c']);
-  assert.match(spawnCalls[1].args[3], /^"C:\\Tools\\claude\.CMD" "-p" "--model" "fable" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00 /);
+  assert.match(spawnCalls[1].args[3], /^"C:\\Tools\\claude\.CMD" "-p" "--model" "haiku" "--effort" "low" "--output-format" "json" "\/schedule daily at 09:00 /);
   assert.deepEqual(spawnCalls[1].options, {
     encoding: 'utf8',
     env: {
@@ -870,6 +870,121 @@ test('setup creates Codex automation before launching Claude interactive schedul
 
   assert.equal(exitCode, 0);
   assert.deepEqual(events, ['codex-automation-file', 'claude-schedule']);
+});
+
+test('setup still creates Claude routine when Codex has no usable history', async () => {
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/bin/codex': '',
+    '/home/alex/.claude': '',
+    '/home/alex/.claude/session.jsonl':
+      '{"timestamp":"2026-06-10T17:22:00","message":"Usage limit reached. Please try again later."}',
+    '/home/alex/.codex': '',
+  });
+  fs.readdirSync = (filePath, options) => {
+    assert.deepEqual(options, { withFileTypes: true });
+
+    if (filePath === '/home/alex/.claude') {
+      return [
+        {
+          name: 'session.jsonl',
+          isDirectory: () => false,
+          isFile: () => true,
+        },
+      ];
+    }
+
+    return [];
+  };
+  fs.statSync = (filePath) => {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`missing file: ${filePath}`);
+    }
+
+    return { mtime: new Date('2026-06-13T17:22:00') };
+  };
+  const io = createIo();
+  const spawnCalls = [];
+  const spawnSync = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+
+    if (args.length === 1 && args[0] === '--version') {
+      return { status: 0, stdout: `${command} 1.0.0\n` };
+    }
+
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result:
+          'Routine created successfully. Routine ID: trig_after_codex_skip. URL: https://claude.ai/code/routines/trig_after_codex_skip',
+      }),
+    };
+  };
+
+  const exitCode = await runCli(['setup'], {
+    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(io.stdout, /codex: insufficient usage-limit hit history/);
+  assert.match(io.stdout, /Created Claude Code Routine/);
+  assert.match(io.stdout, /https:\/\/claude\.ai\/code\/routines\/trig_after_codex_skip/);
+  assert.equal(spawnCalls.filter((call) => call.args.includes('-p')).length, 1);
+  assert.match(fs.writeCalls.at(-1).contents, /"routineName": "Agent Warmup"/);
+});
+
+test('setup still creates Claude routine when Codex setup throws', async () => {
+  const fs = createMemoryFs({
+    '/bin/claude': '',
+    '/bin/codex': '',
+    '/home/alex/.claude': '',
+    '/home/alex/.codex': '',
+  });
+  const io = createIo();
+  const spawnCalls = [];
+  const spawnSync = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+
+    if (args.length === 1 && args[0] === '--version') {
+      return { status: 0, stdout: `${command} 1.0.0\n` };
+    }
+
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result:
+          'Routine created successfully. Routine ID: trig_after_codex_error. URL: https://claude.ai/code/routines/trig_after_codex_error',
+      }),
+    };
+  };
+
+  const exitCode = await runCli(['setup', '--time', '09:00'], {
+    codexAutomationCreate() {
+      throw new Error('Codex automation unavailable');
+    },
+    env: { HOME: '/home/alex', PATH: '/bin', XDG_CONFIG_HOME: '/tmp' },
+    fs,
+    io,
+    platform: 'linux',
+    spawnSync,
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(io.stderr, /codex setup failed: Codex automation unavailable/);
+  assert.match(io.stdout, /Created Claude Code Routine/);
+  assert.match(io.stdout, /https:\/\/claude\.ai\/code\/routines\/trig_after_codex_error/);
+  assert.equal(spawnCalls.filter((call) => call.args.includes('-p')).length, 1);
+  assert.match(fs.writeCalls.at(-1).contents, /"routineName": "Agent Warmup"/);
 });
 
 test('setup refuses to overwrite recorded warmups before creating anything', async () => {
